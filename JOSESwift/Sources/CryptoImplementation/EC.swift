@@ -113,6 +113,19 @@ fileprivate extension SignatureAlgorithm {
         _ = computedDigestFunction(Array(input), UInt32(input.count), &digest)
         return digest
     }
+    
+    var secKeyAlgorithm: SecKeyAlgorithm? {
+        switch self {
+        case .ES256:
+            return .ecdsaSignatureMessageX962SHA256
+        case .ES384:
+            return .ecdsaSignatureMessageX962SHA384
+        case .ES512:
+            return .ecdsaSignatureMessageX962SHA512
+        default:
+            return nil
+        }
+    }
 
     var digestLength: Int? {
         switch self {
@@ -179,21 +192,22 @@ internal struct EC {
         guard let curveType = algorithm.curveType else {
             throw ECError.invalidCurveDigestAlgorithm
         }
-
-        let digest = try algorithm.createDigest(input: signingInput)
-        var signatureLength = curveType.signatureOctetLength
-
-        guard let signature = NSMutableData(length: signatureLength) else {
-            throw ECError.couldNotAllocateMemoryForSignature
+        guard let secKeyAlgorithm = algorithm.secKeyAlgorithm else {
+            throw ECError.algorithmNotSupported
         }
-
-        let signatureBytes = signature.mutableBytes.assumingMemoryBound(to: UInt8.self)
-        let status = SecKeyRawSign(privateKey, .sigRaw, digest, digest.count, signatureBytes, &signatureLength)
-        if status != errSecSuccess {
-            throw ECError.signingFailed(description: "Error creating signature. (OSStatus: \(status))")
+        
+        var cfErrorRef: Unmanaged<CFError>?
+        let signature = SecKeyCreateSignature(privateKey, secKeyAlgorithm, signingInput as CFData, &cfErrorRef)
+        if cfErrorRef != nil  {
+            throw ECError.signingFailed(description: "Error creating signature. (CFError: \(cfErrorRef!.takeRetainedValue()))")
         }
-
-        return signature as Data
+        
+        if let signature = signature as ASN1? {
+            return try signature.toRawSignature(octetLength: curveType.coordinateOctetLength)
+        } else {
+            throw ECError.signingFailed(description: "Error creating signature.")
+        }
+        
     }
 
     /// Verifies input data against a signature with a given elliptic curve algorithm and the corresponding public key.
